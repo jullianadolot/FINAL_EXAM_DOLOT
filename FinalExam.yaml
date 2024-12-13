@@ -1,0 +1,93 @@
+- name: Enterprise Service and Monitoring Setup
+  hosts: all
+  become: true
+  vars:
+    username: "jabez"
+    apache_port: 80
+    prometheus_version: "2.46.0"
+  tasks:
+
+    - name: Install Apache on Ubuntu
+      apt:
+        name: apache2
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Apache on Centos
+      yum:
+        name: httpd
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Start and Enable Apache Service
+      service:
+        name: "{{ 'apache2' if ansible_os_family == 'Debian' else 'httpd' }}"
+        state: started
+        enabled: true
+
+    - name: Configure Apache Port
+      lineinfile:
+        path: "{{ '/etc/apache2/ports.conf' if ansible_os_family == 'Debian' else '/etc/httpd/conf/httpd.conf' }}"
+        regexp: "^Listen"
+        line: "Listen {{ apache_port }}"
+      notify: Restart Apache
+
+    - name: Download Prometheus
+      get_url:
+        url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+        dest: /tmp/prometheus.tar.gz
+
+    - name: Extract Prometheus
+      unarchive:
+        src: /tmp/prometheus.tar.gz
+        dest: /opt
+        remote_src: true
+
+    - name: Move Prometheus Files
+      command:
+        cmd: mv /opt/prometheus-{{ prometheus_version }}.linux-amd64 /opt/prometheus
+      args:
+        creates: /opt/prometheus
+
+    - name: Create Prometheus User
+      user:
+        name: prometheus
+        shell: /sbin/nologin
+
+    - name: Set Prometheus Ownership
+      file:
+        path: /opt/prometheus
+        owner: prometheus
+        group: prometheus
+        state: directory
+        recurse: yes
+
+    - name: Configure Prometheus as a Service
+      copy:
+        dest: /etc/systemd/system/prometheus.service
+        content: |
+          [Unit]
+          Description=Prometheus Monitoring
+          After=network.target
+
+          [Service]
+          User=prometheus
+          ExecStart=/opt/prometheus/prometheus \
+            --config.file=/opt/prometheus/prometheus.yml \
+            --storage.tsdb.path=/opt/prometheus/data
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd and Enable Prometheus
+      systemd:
+        daemon_reload: true
+        name: prometheus
+        state: started
+        enabled: true
+
+    - name: Update MOTD
+      copy:
+        dest: /etc/motd
+        content: "Ansible Managed by {{ username }}"
